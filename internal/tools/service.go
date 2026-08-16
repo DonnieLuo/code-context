@@ -166,13 +166,45 @@ func (s *Service) Search(ctx context.Context, repoID, query, path string, globs 
 	scan := bufio.NewScanner(bytes.NewReader(b))
 	scan.Buffer(make([]byte, 4096), 1<<20)
 	out := []map[string]any{}
+	currentFile := []map[string]any{}
+	fileHasMatch := false
+	matches := 0
+	truncated := false
 	for scan.Scan() {
 		var v map[string]any
-		if json.Unmarshal(scan.Bytes(), &v) == nil {
-			out = append(out, v)
+		if json.Unmarshal(scan.Bytes(), &v) != nil {
+			continue
+		}
+		typeName, _ := v["type"].(string)
+		switch typeName {
+		case "begin":
+			currentFile = []map[string]any{v}
+			fileHasMatch = false
+		case "match":
+			if matches < limit {
+				currentFile = append(currentFile, v)
+				fileHasMatch = true
+				matches++
+			} else {
+				truncated = true
+			}
+		case "context":
+			// Preserve surrounding context for the selected matches only.
+			if matches < limit || fileHasMatch {
+				currentFile = append(currentFile, v)
+			}
+		case "end":
+			if fileHasMatch {
+				currentFile = append(currentFile, v)
+				out = append(out, currentFile...)
+			}
+			if matches >= limit {
+				truncated = true
+				break
+			}
 		}
 	}
-	return out, len(out) >= limit, scan.Err()
+	return out, truncated, scan.Err()
 }
 func (s *Service) Diff(ctx context.Context, repoID, base, head, path string, staged bool) (string, bool, error) {
 	repo, err := s.repo(repoID)
@@ -229,7 +261,8 @@ func (s *Service) ListFiles(repoID, path string, depth int) ([]string, error) {
 			return nil
 		}
 		rel, _ := filepath.Rel(repo.Path, p)
-		if depth > 0 && len(strings.Split(filepath.ToSlash(rel), "/")) > depth {
+		depthRel, _ := filepath.Rel(root, p)
+		if depth > 0 && len(strings.Split(filepath.ToSlash(depthRel), "/")) > depth {
 			return nil
 		}
 		out = append(out, filepath.ToSlash(rel))

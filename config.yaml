@@ -7,9 +7,9 @@ server:
 jdtls:
   # Point this at the jdtls launcher installed on the server.
   command: "/home/ubuntu/jdtls/bin/jdtls"
-  workspace_root: "/home/ubuntu/root"
+  workspace_root: "/home/ubuntu/code"
 repositories:
   easy-rent-contract:
-    path: "/easy-rent-contract"
+    path: "/home/ubuntu/code/easy-rent-contract"
   home-trusteeship-contract:
-    path: "home-trusteeship-contract"
+    path: "/home/ubuntu/code/home-trusteeship-contract"

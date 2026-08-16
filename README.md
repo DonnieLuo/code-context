@@ -11,7 +11,7 @@ Java 语义查询由 Eclipse JDT LS 提供，支持精确的定义、实现、�
 - JDK 21+
 - Eclipse JDT Language Server (`jdtls`)
 
-将 `config.example.yaml` 复制为 `config.yaml`，配置服务器上受控的仓库和 jdtls 启动命令。仓库由部署流程同步；调用方只传 `repo_id`，不会接触服务器路径。
+将 `config.local.yaml` 复制为 `config.yaml`，配置服务器上受控的仓库和 jdtls 启动命令。仓库由部署流程同步；调用方只传 `repo_id`，不会接触服务器路径。
 
 ```bash
 go run ./cmd/code-context -config config.yaml

@@ -6,10 +6,10 @@ server:
   max_diff_bytes: 4194304
 jdtls:
   # Point this at the jdtls launcher installed on the server.
-  command: "/home/ubuntu/jdtls/bin/jdtls"
-  workspace_root: "/home/ubuntu/root"
+  command: "/Users/donnie/Downloads/jdtls/bin/jdtls"
+  workspace_root: "/Users/donnie/Workspace"
 repositories:
   easy-rent-contract:
-    path: "/easy-rent-contract"
+    path: "/Users/donnie/IdeaProjects/ke/easy-rent-contract"
   home-trusteeship-contract:
-    path: "home-trusteeship-contract"
+    path: "/Users/donnie/IdeaProjects/ke/home-trusteeship-contract"

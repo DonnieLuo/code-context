@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -33,6 +34,9 @@ type CallHierarchyItem struct {
 	URI            string `json:"uri"`
 	Range          Range  `json:"range"`
 	SelectionRange Range  `json:"selectionRange"`
+	// JDT LS puts an opaque handle here; it must be sent back unchanged in
+	// incomingCalls/outgoingCalls requests.
+	Data json.RawMessage `json:"data,omitempty"`
 }
 
 type JDT struct {
@@ -147,7 +151,7 @@ func (j *JDT) CallHierarchy(ctx context.Context, repoID, root, file string, p Po
 	}
 	var items []CallHierarchyItem
 	if err = c.Call(ctx, "textDocument/prepareCallHierarchy", map[string]any{"textDocument": map[string]string{"uri": fileURI(file)}, "position": p}, &items); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("prepare call hierarchy: %w", err)
 	}
 	out := []CallHierarchyItem{}
 	for _, item := range items {
@@ -159,8 +163,8 @@ func (j *JDT) CallHierarchy(ctx context.Context, repoID, root, file string, p Po
 		if !incoming {
 			method = "callHierarchy/outgoingCalls"
 		}
-		if err = c.Call(ctx, method, item, &edges); err != nil {
-			return nil, err
+		if err = c.Call(ctx, method, map[string]any{"item": item}, &edges); err != nil {
+			return nil, fmt.Errorf("%s: %w", method, err)
 		}
 		for _, edge := range edges {
 			if incoming {
