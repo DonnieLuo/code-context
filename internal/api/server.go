@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/example/code-context/internal/lsp"
@@ -14,14 +15,52 @@ import (
 )
 
 type Server struct {
-	svc     *tools.Service
-	timeout time.Duration
-	maxBody int64
+	svc      *tools.Service
+	timeout  time.Duration
+	maxBody  int64
+	maxBatch int
 }
 
-func New(svc *tools.Service, timeout time.Duration) *Server {
-	return &Server{svc: svc, timeout: timeout, maxBody: 1 << 20}
+func New(svc *tools.Service, timeout time.Duration, maxBatch int) *Server {
+	if maxBatch <= 0 {
+		maxBatch = 20
+	}
+	return &Server{svc: svc, timeout: timeout, maxBody: 1 << 20, maxBatch: maxBatch}
 }
+
+type ToolRequest struct {
+	RepoID       string   `json:"repo_id"`
+	File         string   `json:"file"`
+	Line         int      `json:"line"`
+	Column       int      `json:"column"`
+	Query        string   `json:"query"`
+	Path         string   `json:"path"`
+	Globs        []string `json:"globs"`
+	Limit        int      `json:"limit"`
+	ContextLines int      `json:"context_lines"`
+	StartLine    int      `json:"start_line"`
+	EndLine      int      `json:"end_line"`
+	Base         string   `json:"base"`
+	Head         string   `json:"head"`
+	Staged       bool     `json:"staged"`
+	Depth        int      `json:"depth"`
+}
+
+type toolBatch struct {
+	Requests []ToolRequest `json:"requests"`
+}
+
+type toolResult struct {
+	Data      any            `json:"data,omitempty"`
+	Truncated bool           `json:"truncated"`
+	Error     *toolItemError `json:"error,omitempty"`
+}
+
+type toolItemError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
@@ -42,33 +81,52 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) tool(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/v1/tools/")
-	var req struct {
-		RepoID       string   `json:"repo_id"`
-		File         string   `json:"file"`
-		Line         int      `json:"line"`
-		Column       int      `json:"column"`
-		Query        string   `json:"query"`
-		Path         string   `json:"path"`
-		Globs        []string `json:"globs"`
-		Limit        int      `json:"limit"`
-		ContextLines int      `json:"context_lines"`
-		StartLine    int      `json:"start_line"`
-		EndLine      int      `json:"end_line"`
-		Base         string   `json:"base"`
-		Head         string   `json:"head"`
-		Staged       bool     `json:"staged"`
-		Depth        int      `json:"depth"`
-	}
-	if err := decode(w, r, &req); err != nil {
+	if !knownTool(name) {
+		fail(w, http.StatusNotFound, "unknown_tool", "unknown tool")
 		return
 	}
-	semanticTool := strings.HasPrefix(name, "find_") || name == "get_hover"
-	if semanticTool && (req.File == "" || req.Line < 1 || req.Column < 1) {
-		fail(w, http.StatusBadRequest, "invalid_position", "file, line, and column (1-based) are required")
+	var batch toolBatch
+	if err := decode(w, r, &batch); err != nil {
+		return
+	}
+	if len(batch.Requests) == 0 || len(batch.Requests) > s.maxBatch {
+		fail(w, http.StatusBadRequest, "invalid_requests", fmt.Sprintf("requests must contain 1 to %d items", s.maxBatch))
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
 	defer cancel()
+	results := make([]toolResult, len(batch.Requests))
+	var wg sync.WaitGroup
+	for i, req := range batch.Requests {
+		wg.Add(1)
+		go func(i int, req ToolRequest) {
+			defer wg.Done()
+			data, truncated, err := s.execute(ctx, name, req)
+			if err != nil {
+				results[i] = toolResult{Error: &toolItemError{Code: errorCode(err), Message: err.Error()}}
+				return
+			}
+			results[i] = toolResult{Data: data, Truncated: truncated}
+		}(i, req)
+	}
+	wg.Wait()
+	write(w, http.StatusOK, map[string]any{"results": results})
+}
+
+func (s *Server) execute(ctx context.Context, name string, req ToolRequest) (any, bool, error) {
+	semanticTool := strings.HasPrefix(name, "find_") || name == "get_hover"
+	if semanticTool && (req.File == "" || req.Line < 1 || req.Column < 1) {
+		return nil, false, fmt.Errorf("file, line, and column (1-based) are required")
+	}
+	if name == "get_file_symbols" && req.File == "" {
+		return nil, false, fmt.Errorf("file is required")
+	}
+	if (name == "search_code" || name == "search_symbols") && req.Query == "" {
+		return nil, false, fmt.Errorf("query is required")
+	}
+	if name == "read_file" && req.Path == "" {
+		return nil, false, fmt.Errorf("path is required")
+	}
 	var data any
 	var truncated bool
 	var err error
@@ -82,9 +140,9 @@ func (s *Server) tool(w http.ResponseWriter, r *http.Request) {
 	case "find_references":
 		data, err = s.svc.Semantic(ctx, req.RepoID, req.File, req.Line, req.Column, "textDocument/references")
 	case "find_callers":
-		data, err = s.svc.CallHierarchy(ctx, req.RepoID, req.File, req.Line, req.Column, true)
+		data, truncated, err = s.svc.CallHierarchy(ctx, req.RepoID, req.File, req.Line, req.Column, req.Depth, true)
 	case "find_callees":
-		data, err = s.svc.CallHierarchy(ctx, req.RepoID, req.File, req.Line, req.Column, false)
+		data, truncated, err = s.svc.CallHierarchy(ctx, req.RepoID, req.File, req.Line, req.Column, req.Depth, false)
 	case "search_symbols":
 		data, err = s.svc.Symbols(ctx, req.RepoID, req.Query)
 	case "get_file_symbols":
@@ -99,15 +157,24 @@ func (s *Server) tool(w http.ResponseWriter, r *http.Request) {
 		var d string
 		d, truncated, err = s.svc.Diff(ctx, req.RepoID, req.Base, req.Head, req.Path, req.Staged)
 		data = map[string]any{"diff": d}
-	default:
-		fail(w, http.StatusNotFound, "unknown_tool", "unknown tool")
-		return
 	}
-	if err != nil {
-		fail(w, status(err), "tool_error", err.Error())
-		return
+	return data, truncated, err
+}
+
+func knownTool(name string) bool {
+	for _, candidate := range []string{"search_code", "find_definition", "find_implementations", "find_references", "find_callers", "find_callees", "read_file", "list_files", "get_git_diff", "search_symbols", "get_file_symbols", "get_hover"} {
+		if name == candidate {
+			return true
+		}
 	}
-	write(w, http.StatusOK, map[string]any{"data": data, "truncated": truncated})
+	return false
+}
+
+func errorCode(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	return "tool_error"
 }
 func (s *Server) fileSymbols(ctx context.Context, repoID, file string) (any, error) {
 	repo, err := s.svc.Repos.Get(repoID)
@@ -187,10 +254,50 @@ func (s *Server) schemas(w http.ResponseWriter, r *http.Request) {
 	names := []string{"search_code", "find_definition", "find_implementations", "find_references", "find_callers", "find_callees", "read_file", "list_files", "get_git_diff", "search_symbols", "get_file_symbols", "get_hover"}
 	tools := make([]map[string]any, 0, len(names))
 	for _, n := range names {
-		tools = append(tools, map[string]any{"name": n, "description": description(n), "input_schema": map[string]any{"type": "object", "properties": map[string]any{"repo_id": map[string]string{"type": "string"}}, "required": []string{"repo_id"}}})
+		tools = append(tools, map[string]any{"name": n, "description": description(n), "input_schema": toolInputSchema(n)})
 	}
 	write(w, 200, map[string]any{"tools": tools})
 }
 func description(name string) string {
-	return fmt.Sprintf("Code context tool: %s. Use repository-relative paths and 1-based positions.", name)
+	return fmt.Sprintf("Code context tool: %s. Submit one or more requests; use repository-relative paths and 1-based positions.", name)
+}
+
+func toolInputSchema(name string) map[string]any {
+	properties := map[string]any{
+		"repo_id":       map[string]string{"type": "string"},
+		"file":          map[string]string{"type": "string"},
+		"line":          map[string]any{"type": "integer", "minimum": 1},
+		"column":        map[string]any{"type": "integer", "minimum": 1},
+		"query":         map[string]string{"type": "string"},
+		"path":          map[string]string{"type": "string"},
+		"globs":         map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
+		"limit":         map[string]any{"type": "integer", "minimum": 1},
+		"context_lines": map[string]any{"type": "integer", "minimum": 0},
+		"start_line":    map[string]any{"type": "integer", "minimum": 1},
+		"end_line":      map[string]any{"type": "integer", "minimum": 1},
+		"base":          map[string]string{"type": "string"},
+		"head":          map[string]string{"type": "string"},
+		"staged":        map[string]string{"type": "boolean"},
+		"depth":         map[string]any{"type": "integer", "minimum": 1},
+	}
+	required := []string{"repo_id"}
+	if strings.HasPrefix(name, "find_") || name == "get_hover" {
+		required = append(required, "file", "line", "column")
+	}
+	if name == "search_code" || name == "search_symbols" {
+		required = append(required, "query")
+	}
+	if name == "read_file" {
+		required = append(required, "path")
+	}
+	if name == "get_file_symbols" {
+		required = append(required, "file")
+	}
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"requests": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "object", "properties": properties, "required": required}},
+		},
+		"required": []string{"requests"},
+	}
 }

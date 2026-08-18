@@ -36,7 +36,8 @@ type CallHierarchyItem struct {
 	SelectionRange Range  `json:"selectionRange"`
 	// JDT LS puts an opaque handle here; it must be sent back unchanged in
 	// incomingCalls/outgoingCalls requests.
-	Data json.RawMessage `json:"data,omitempty"`
+	Data  json.RawMessage `json:"data,omitempty"`
+	Depth int             `json:"-"`
 }
 
 type JDT struct {
@@ -144,17 +145,16 @@ func (j *JDT) FileSymbols(ctx context.Context, repoID, root, file string) (any, 
 	err = c.Call(ctx, "textDocument/documentSymbol", map[string]any{"textDocument": map[string]string{"uri": fileURI(file)}}, &out)
 	return out, err
 }
-func (j *JDT) CallHierarchy(ctx context.Context, repoID, root, file string, p Position, incoming bool) ([]CallHierarchyItem, error) {
+func (j *JDT) CallHierarchy(ctx context.Context, repoID, root, file string, p Position, incoming bool, depth, maxResults int) ([]CallHierarchyItem, bool, error) {
 	c, err := j.ensureOpen(ctx, repoID, root, file)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var items []CallHierarchyItem
 	if err = c.Call(ctx, "textDocument/prepareCallHierarchy", map[string]any{"textDocument": map[string]string{"uri": fileURI(file)}, "position": p}, &items); err != nil {
-		return nil, fmt.Errorf("prepare call hierarchy: %w", err)
+		return nil, false, fmt.Errorf("prepare call hierarchy: %w", err)
 	}
-	out := []CallHierarchyItem{}
-	for _, item := range items {
+	return traverseCallHierarchy(ctx, items, depth, maxResults, func(item CallHierarchyItem) ([]CallHierarchyItem, error) {
 		var edges []struct {
 			From CallHierarchyItem `json:"from"`
 			To   CallHierarchyItem `json:"to"`
@@ -166,15 +166,67 @@ func (j *JDT) CallHierarchy(ctx context.Context, repoID, root, file string, p Po
 		if err = c.Call(ctx, method, map[string]any{"item": item}, &edges); err != nil {
 			return nil, fmt.Errorf("%s: %w", method, err)
 		}
+		related := make([]CallHierarchyItem, 0, len(edges))
 		for _, edge := range edges {
 			if incoming {
-				out = append(out, edge.From)
+				related = append(related, edge.From)
 			} else {
-				out = append(out, edge.To)
+				related = append(related, edge.To)
 			}
 		}
+		return related, nil
+	})
+}
+
+func traverseCallHierarchy(ctx context.Context, roots []CallHierarchyItem, depth, maxResults int, related func(CallHierarchyItem) ([]CallHierarchyItem, error)) ([]CallHierarchyItem, bool, error) {
+	if depth <= 0 {
+		depth = 1
 	}
-	return out, nil
+	if maxResults <= 0 {
+		maxResults = 100
+	}
+	seen := make(map[string]bool, len(roots))
+	frontier := make([]CallHierarchyItem, 0, len(roots))
+	for _, root := range roots {
+		root.Depth = 0
+		key := callHierarchyKey(root)
+		if !seen[key] {
+			seen[key] = true
+			frontier = append(frontier, root)
+		}
+	}
+	out := []CallHierarchyItem{}
+	for level := 1; level <= depth && len(frontier) > 0; level++ {
+		next := []CallHierarchyItem{}
+		for _, item := range frontier {
+			edges, err := related(item)
+			if err != nil {
+				return nil, false, err
+			}
+			for _, edge := range edges {
+				key := callHierarchyKey(edge)
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				edge.Depth = level
+				out = append(out, edge)
+				if len(out) >= maxResults {
+					return out, true, nil
+				}
+				if level < depth {
+					next = append(next, edge)
+				}
+			}
+		}
+		frontier = next
+	}
+	return out, false, nil
+}
+
+func callHierarchyKey(item CallHierarchyItem) string {
+	r := item.SelectionRange
+	return fmt.Sprintf("%s:%d:%d:%d:%d", item.URI, r.Start.Line, r.Start.Character, r.End.Line, r.End.Character)
 }
 func (j *JDT) Refresh(repoID string) {
 	j.mu.Lock()

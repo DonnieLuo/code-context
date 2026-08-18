@@ -1,9 +1,11 @@
 server:
-  listen: "127.0.0.1:8080"
+  listen: "0.0.0.0:3001"
   request_timeout: 30s
   max_results: 100
   max_read_bytes: 2097152
   max_diff_bytes: 4194304
+  max_batch_requests: 20
+  max_call_depth: 10
 jdtls:
   # Point this at the jdtls launcher installed on the server.
   command: "/home/ubuntu/jdtls/bin/jdtls"

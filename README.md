@@ -20,14 +20,16 @@ curl http://127.0.0.1:8080/healthz
 
 ## 工具调用
 
-所有工具为 `POST /v1/tools/{name}`，请求均需 `repo_id`。文件路径相对于仓库根目录，行列号从 1 开始。
+所有工具为 `POST /v1/tools/{name}`，请求体必须以 `requests` 列表承载一项或多项查询。文件路径相对于仓库根目录，行列号从 1 开始；响应的 `results` 与请求顺序一一对应，单项失败只会在对应结果中返回 `error`。
 
 ```json
 {
-  "repo_id": "order-service",
-  "file": "src/main/java/com/acme/OrderService.java",
-  "line": 42,
-  "column": 16
+  "requests": [{
+    "repo_id": "order-service",
+    "file": "src/main/java/com/acme/OrderService.java",
+    "line": 42,
+    "column": 16
+  }]
 }
 ```
 
@@ -35,11 +37,11 @@ curl http://127.0.0.1:8080/healthz
 
 - `search_code`：ripgrep 文本/正则搜索。
 - `find_definition`、`find_implementations`、`find_references`：JDT LS 语义导航。
-- `find_callers`、`find_callees`：JDT LS 调用层级。
+- `find_callers`、`find_callees`：JDT LS 调用层级。可传 `depth`（默认 1，受 `server.max_call_depth` 限制）；服务端会遍历调用图、去重并在节点结果中给出 `depth`。
 - `search_symbols`、`get_file_symbols`、`get_hover`：符号和类型信息。
 - `read_file`、`list_files`、`get_git_diff`：文件与 Git 上下文。
 
-`GET /v1/tools` 返回工具名称和基础 JSON Schema，适合嵌入服务 B 的 Skill 定义。代码仓库更新后调用：
+`GET /v1/tools` 返回批量请求的 JSON Schema，适合嵌入服务 B 的 Skill 定义。代码仓库更新后调用：
 
 ```bash
 curl -X POST http://127.0.0.1:8080/v1/repositories/order-service/refresh
@@ -48,6 +50,21 @@ curl -X POST http://127.0.0.1:8080/v1/repositories/order-service/refresh
 这会关闭该仓库的 JDT LS 会话；下一次语义查询会启动新会话并重新导入项目。
 
 可通过 `GET /v1/repositories/order-service/status` 查看当前 Git revision 和 JDT LS 会话是否已启动。
+
+## Ubuntu 打包与运行
+
+在 macOS 或 Linux 构建机执行：
+
+```bash
+./scripts/package-ubuntu.sh
+```
+
+将 `dist/code-context-linux-amd64.tar.gz` 解压到 Ubuntu 主机。包内默认使用 `config.yaml` 启动；也可通过 `-config` 指定其他配置文件：
+
+```bash
+./code-context
+./code-context -config /etc/code-context/config.yaml
+```
 
 ## 安全边界
 

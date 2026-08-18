@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Context"
+  short_description: "Query managed repositories for precise code context."
+  default_prompt: "Use $code-context to trace the relevant code path in a managed repository."

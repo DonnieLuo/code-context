@@ -20,6 +20,7 @@ type Service struct {
 	JDT                        *lsp.JDT
 	MaxResults                 int
 	MaxReadBytes, MaxDiffBytes int64
+	MaxCallDepth               int
 }
 type Location struct {
 	File        string `json:"file"`
@@ -30,6 +31,7 @@ type Location struct {
 	Snippet     string `json:"snippet,omitempty"`
 	Precision   string `json:"precision"`
 	Source      string `json:"source"`
+	Depth       int    `json:"depth,omitempty"`
 }
 
 func (s *Service) repo(id string) (repository.Repository, error) { return s.Repos.Get(id) }
@@ -77,24 +79,32 @@ func (s *Service) Symbols(ctx context.Context, repoID, q string) ([]Location, er
 	}
 	return out, nil
 }
-func (s *Service) CallHierarchy(ctx context.Context, repoID, file string, line, column int, incoming bool) ([]Location, error) {
+func (s *Service) CallHierarchy(ctx context.Context, repoID, file string, line, column, depth int, incoming bool) ([]Location, bool, error) {
 	repo, err := s.repo(repoID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	full, err := s.Repos.File(repo, file)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	xs, err := s.JDT.CallHierarchy(ctx, repoID, repo.Path, full, lsp.Position{Line: line - 1, Character: column - 1}, incoming)
+	if depth <= 0 {
+		depth = 1
+	}
+	if s.MaxCallDepth > 0 && depth > s.MaxCallDepth {
+		return nil, false, fmt.Errorf("depth exceeds configured maximum of %d", s.MaxCallDepth)
+	}
+	xs, truncated, err := s.JDT.CallHierarchy(ctx, repoID, repo.Path, full, lsp.Position{Line: line - 1, Character: column - 1}, incoming, depth, s.MaxResults)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	out := make([]Location, 0, len(xs))
 	for _, x := range xs {
-		out = append(out, s.loc(repo, lsp.Location{URI: x.URI, Range: x.SelectionRange}))
+		location := s.loc(repo, lsp.Location{URI: x.URI, Range: x.SelectionRange})
+		location.Depth = x.Depth
+		out = append(out, location)
 	}
-	return out, nil
+	return out, truncated, nil
 }
 func (s *Service) Read(repoID, path string, start, end int) (map[string]any, error) {
 	repo, err := s.repo(repoID)

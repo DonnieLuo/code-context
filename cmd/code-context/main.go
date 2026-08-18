@@ -21,8 +21,8 @@ func main() {
 		slog.Error("invalid configuration", "error", err)
 		os.Exit(1)
 	}
-	service := &tools.Service{Repos: repository.New(cfg), JDT: lsp.NewJDT(cfg.JDTLS.Command, cfg.JDTLS.Args, cfg.JDTLS.WorkspaceRoot), MaxResults: cfg.Server.MaxResults, MaxReadBytes: cfg.Server.MaxReadBytes, MaxDiffBytes: cfg.Server.MaxDiffBytes}
-	srv := &http.Server{Addr: cfg.Server.Listen, Handler: api.New(service, cfg.Server.RequestTimeout).Handler(), ReadHeaderTimeout: cfg.Server.RequestTimeout}
+	service := &tools.Service{Repos: repository.New(cfg), JDT: lsp.NewJDT(cfg.JDTLS.Command, cfg.JDTLS.Args, cfg.JDTLS.WorkspaceRoot), MaxResults: cfg.Server.MaxResults, MaxReadBytes: cfg.Server.MaxReadBytes, MaxDiffBytes: cfg.Server.MaxDiffBytes, MaxCallDepth: cfg.Server.MaxCallDepth}
+	srv := &http.Server{Addr: cfg.Server.Listen, Handler: api.New(service, cfg.Server.RequestTimeout, cfg.Server.MaxBatchRequests).Handler(), ReadHeaderTimeout: cfg.Server.RequestTimeout}
 	slog.Info("code-context service started", "listen", cfg.Server.Listen, "repositories", len(cfg.Repositories))
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("server stopped", "error", err)

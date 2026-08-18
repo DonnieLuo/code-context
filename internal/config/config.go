@@ -13,11 +13,13 @@ import (
 
 type Config struct {
 	Server struct {
-		Listen         string        `json:"listen"`
-		RequestTimeout time.Duration `json:"request_timeout"`
-		MaxResults     int           `json:"max_results"`
-		MaxReadBytes   int64         `json:"max_read_bytes"`
-		MaxDiffBytes   int64         `json:"max_diff_bytes"`
+		Listen           string        `json:"listen"`
+		RequestTimeout   time.Duration `json:"request_timeout"`
+		MaxResults       int           `json:"max_results"`
+		MaxReadBytes     int64         `json:"max_read_bytes"`
+		MaxDiffBytes     int64         `json:"max_diff_bytes"`
+		MaxBatchRequests int           `json:"max_batch_requests"`
+		MaxCallDepth     int           `json:"max_call_depth"`
 	} `json:"server"`
 	JDTLS struct {
 		Command       string   `json:"command"`
@@ -55,6 +57,12 @@ func Load(path string) (Config, error) {
 	}
 	if c.Server.MaxDiffBytes <= 0 {
 		c.Server.MaxDiffBytes = 4 << 20
+	}
+	if c.Server.MaxBatchRequests <= 0 {
+		c.Server.MaxBatchRequests = 20
+	}
+	if c.Server.MaxCallDepth <= 0 {
+		c.Server.MaxCallDepth = 10
 	}
 	if c.JDTLS.WorkspaceRoot == "" {
 		c.JDTLS.WorkspaceRoot = ".code-context/jdtls"
@@ -142,6 +150,18 @@ func parseYAMLSubset(b []byte) (Config, error) {
 					return Config{}, e
 				}
 				c.Server.MaxDiffBytes = n
+			case "max_batch_requests":
+				n, e := strconv.Atoi(value)
+				if e != nil {
+					return Config{}, e
+				}
+				c.Server.MaxBatchRequests = n
+			case "max_call_depth":
+				n, e := strconv.Atoi(value)
+				if e != nil {
+					return Config{}, e
+				}
+				c.Server.MaxCallDepth = n
 			}
 		case "jdtls":
 			if key == "command" {

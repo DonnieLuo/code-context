@@ -4,12 +4,14 @@ server:
   max_results: 100
   max_read_bytes: 2097152
   max_diff_bytes: 4194304
+  max_batch_requests: 20
+  max_call_depth: 10
 jdtls:
   # Point this at the jdtls launcher installed on the server.
   command: "/Users/donnie/Downloads/jdtls/bin/jdtls"
   workspace_root: "/Users/donnie/Workspace"
 repositories:
   easy-rent-contract:
-    path: "/Users/donnie/IdeaProjects/ke/easy-rent-contract"
+    path: "/Users/donnie/IdeaProjects/easy-rent-contract"
   home-trusteeship-contract:
-    path: "/Users/donnie/IdeaProjects/ke/home-trusteeship-contract"
+    path: "/Users/donnie/IdeaProjects/home-trusteeship-contract"
