@@ -33,6 +33,18 @@ type Location struct {
 	Source      string `json:"source"`
 	Depth       int    `json:"depth,omitempty"`
 }
+type GraphNode struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	File   string `json:"file"`
+	Line   int    `json:"line"`
+	Column int    `json:"column"`
+}
+type GraphEdge struct {
+	From      string     `json:"from"`
+	To        string     `json:"to"`
+	CallSites []Location `json:"call_sites,omitempty"`
+}
 
 func (s *Service) repo(id string) (repository.Repository, error) { return s.Repos.Get(id) }
 func (s *Service) loc(repo repository.Repository, x lsp.Location) Location {
@@ -79,7 +91,7 @@ func (s *Service) Symbols(ctx context.Context, repoID, q string) ([]Location, er
 	}
 	return out, nil
 }
-func (s *Service) CallHierarchy(ctx context.Context, repoID, file string, line, column, depth int, incoming bool) ([]Location, bool, error) {
+func (s *Service) TypeHierarchy(ctx context.Context, repoID, file string, line, column, depth int, direction string) ([]Location, bool, error) {
 	repo, err := s.repo(repoID)
 	if err != nil {
 		return nil, false, err
@@ -91,20 +103,192 @@ func (s *Service) CallHierarchy(ctx context.Context, repoID, file string, line, 
 	if depth <= 0 {
 		depth = 1
 	}
+	if direction == "" {
+		direction = "subtypes"
+	}
+	if direction != "subtypes" && direction != "supertypes" {
+		return nil, false, fmt.Errorf("direction must be subtypes or supertypes")
+	}
 	if s.MaxCallDepth > 0 && depth > s.MaxCallDepth {
 		return nil, false, fmt.Errorf("depth exceeds configured maximum of %d", s.MaxCallDepth)
 	}
-	xs, truncated, err := s.JDT.CallHierarchy(ctx, repoID, repo.Path, full, lsp.Position{Line: line - 1, Character: column - 1}, incoming, depth, s.MaxResults)
+	items, truncated, err := s.JDT.TypeHierarchy(ctx, repoID, repo.Path, full, lsp.Position{Line: line - 1, Character: column - 1}, direction, depth, s.MaxResults)
 	if err != nil {
 		return nil, false, err
 	}
-	out := make([]Location, 0, len(xs))
-	for _, x := range xs {
-		location := s.loc(repo, lsp.Location{URI: x.URI, Range: x.SelectionRange})
-		location.Depth = x.Depth
-		out = append(out, location)
+	out := make([]Location, 0, len(items))
+	for _, item := range items {
+		out = append(out, s.loc(repo, lsp.Location{URI: item.URI, Range: item.SelectionRange}))
 	}
 	return out, truncated, nil
+}
+func graphNode(repo repository.Repository, item lsp.CallHierarchyItem) GraphNode {
+	p := strings.TrimPrefix(item.URI, "file://")
+	rel, err := filepath.Rel(repo.Path, p)
+	if err != nil {
+		rel = p
+	}
+	return GraphNode{ID: callID(item), Name: item.Name, File: filepath.ToSlash(rel), Line: item.SelectionRange.Start.Line + 1, Column: item.SelectionRange.Start.Character + 1}
+}
+func callID(item lsp.CallHierarchyItem) string {
+	return fmt.Sprintf("%s:%d:%d", item.URI, item.SelectionRange.Start.Line, item.SelectionRange.Start.Character)
+}
+func (s *Service) CallGraph(ctx context.Context, repoID, file string, line, column, depth int, direction string) (map[string]any, bool, error) {
+	repo, err := s.repo(repoID)
+	if err != nil {
+		return nil, false, err
+	}
+	full, err := s.Repos.File(repo, file)
+	if err != nil {
+		return nil, false, err
+	}
+	if direction == "" {
+		direction = "outgoing"
+	}
+	if direction != "outgoing" && direction != "incoming" {
+		return nil, false, fmt.Errorf("direction must be outgoing or incoming")
+	}
+	if depth <= 0 {
+		depth = 1
+	}
+	if s.MaxCallDepth > 0 && depth > s.MaxCallDepth {
+		return nil, false, fmt.Errorf("depth exceeds configured maximum of %d", s.MaxCallDepth)
+	}
+	raw, truncated, err := s.JDT.CallGraph(ctx, repoID, repo.Path, full, lsp.Position{Line: line - 1, Character: column - 1}, direction, depth, s.MaxResults)
+	if err != nil {
+		return nil, false, err
+	}
+	nodes := map[string]GraphNode{}
+	roots, err := s.JDT.CallHierarchyRoots(ctx, repoID, repo.Path, full, lsp.Position{Line: line - 1, Character: column - 1})
+	if err != nil {
+		return nil, false, err
+	}
+	for _, root := range roots {
+		node := graphNode(repo, root)
+		nodes[node.ID] = node
+	}
+	edges := make([]GraphEdge, 0, len(raw))
+	for _, edge := range raw {
+		from, to := graphNode(repo, edge.From), graphNode(repo, edge.To)
+		nodes[from.ID] = from
+		nodes[to.ID] = to
+		sites := make([]Location, 0, len(edge.FromRanges))
+		for _, r := range edge.FromRanges {
+			sites = append(sites, s.loc(repo, lsp.Location{URI: edge.From.URI, Range: r}))
+		}
+		edges = append(edges, GraphEdge{From: from.ID, To: to.ID, CallSites: sites})
+	}
+	outNodes := make([]GraphNode, 0, len(nodes))
+	for _, node := range nodes {
+		outNodes = append(outNodes, node)
+	}
+	return map[string]any{"nodes": outNodes, "edges": edges}, truncated, nil
+}
+func (s *Service) TraceCallPath(ctx context.Context, repoID, file string, line, column int, targetFile string, targetLine, targetColumn, maxDepth int) (map[string]any, bool, error) {
+	if targetFile == "" || targetLine < 1 || targetColumn < 1 {
+		return nil, false, fmt.Errorf("target_file, target_line, and target_column (1-based) are required")
+	}
+	graph, truncated, err := s.CallGraph(ctx, repoID, file, line, column, maxDepth, "outgoing")
+	if err != nil {
+		return nil, false, err
+	}
+	nodes := graph["nodes"].([]GraphNode)
+	edges := graph["edges"].([]GraphEdge)
+	repo, err := s.repo(repoID)
+	if err != nil {
+		return nil, false, err
+	}
+	targetFull, err := s.Repos.File(repo, targetFile)
+	if err != nil {
+		return nil, false, err
+	}
+	targetRoots, err := s.JDT.CallHierarchyRoots(ctx, repoID, repo.Path, targetFull, lsp.Position{Line: targetLine - 1, Character: targetColumn - 1})
+	if err != nil {
+		return nil, false, err
+	}
+	startFull, err := s.Repos.File(repo, file)
+	if err != nil {
+		return nil, false, err
+	}
+	startRoots, err := s.JDT.CallHierarchyRoots(ctx, repoID, repo.Path, startFull, lsp.Position{Line: line - 1, Character: column - 1})
+	if err != nil {
+		return nil, false, err
+	}
+	start := ""
+	target := ""
+	if len(startRoots) > 0 {
+		start = callID(startRoots[0])
+	}
+	if len(targetRoots) > 0 {
+		target = callID(targetRoots[0])
+	}
+	if start == "" {
+		return map[string]any{"path": []GraphNode{}}, truncated, nil
+	}
+	if target == "" {
+		return map[string]any{"path": []GraphNode{}}, truncated, nil
+	}
+	adj := map[string][]string{}
+	for _, edge := range edges {
+		adj[edge.From] = append(adj[edge.From], edge.To)
+	}
+	previous := map[string]string{start: ""}
+	queue := []string{start}
+	for len(queue) > 0 && previous[target] == "" {
+		current := queue[0]
+		queue = queue[1:]
+		for _, next := range adj[current] {
+			if _, seen := previous[next]; !seen {
+				previous[next] = current
+				queue = append(queue, next)
+			}
+		}
+	}
+	if _, found := previous[target]; !found {
+		return map[string]any{"path": []GraphNode{}}, truncated, nil
+	}
+	byID := map[string]GraphNode{}
+	for _, n := range nodes {
+		byID[n.ID] = n
+	}
+	ids := []string{}
+	for at := target; at != ""; at = previous[at] {
+		ids = append([]string{at}, ids...)
+	}
+	path := make([]GraphNode, 0, len(ids))
+	for _, id := range ids {
+		path = append(path, byID[id])
+	}
+	return map[string]any{"path": path}, truncated, nil
+}
+func (s *Service) SymbolContext(ctx context.Context, repoID, file string, line, column int) (map[string]any, error) {
+	repo, err := s.repo(repoID)
+	if err != nil {
+		return nil, err
+	}
+	full, err := s.Repos.File(repo, file)
+	if err != nil {
+		return nil, err
+	}
+	hover, err := s.JDT.Hover(ctx, repoID, repo.Path, full, lsp.Position{Line: line - 1, Character: column - 1})
+	if err != nil {
+		return nil, err
+	}
+	definition, err := s.Semantic(ctx, repoID, file, line, column, "textDocument/definition")
+	if err != nil {
+		return nil, err
+	}
+	source, err := s.Read(repoID, file, max(1, line-12), line+12)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"hover": hover, "definition": definition, "source": source}, nil
+}
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 func (s *Service) Read(repoID, path string, start, end int) (map[string]any, error) {
 	repo, err := s.repo(repoID)
@@ -216,26 +400,16 @@ func (s *Service) Search(ctx context.Context, repoID, query, path string, globs 
 	}
 	return out, truncated, scan.Err()
 }
-func (s *Service) Diff(ctx context.Context, repoID, base, head, path string, staged bool) (string, bool, error) {
+func (s *Service) GitQuery(ctx context.Context, repoID string, args []string) (string, bool, error) {
 	repo, err := s.repo(repoID)
 	if err != nil {
 		return "", false, err
 	}
-	args := []string{"diff", "--no-ext-diff", "--no-color"}
-	if staged {
-		args = append(args, "--staged")
+	if len(args) == 0 || !readOnlyGitCommand(args[0]) || hasUnsafeGitArg(args[1:]) {
+		return "", false, fmt.Errorf("git command must be a permitted read-only query")
 	}
-	if base != "" {
-		args = append(args, base)
-		if head != "" {
-			args = append(args, head)
-		}
-	}
-	if path != "" {
-		if _, err := s.Repos.File(repo, path); err != nil {
-			return "", false, err
-		}
-		args = append(args, "--", path)
+	if args[0] == "diff" {
+		args = append([]string{"diff", "--no-ext-diff", "--no-color"}, args[1:]...)
 	}
 	b, err := runner.Run(ctx, repo.Path, "git", args...)
 	if err != nil {
@@ -247,6 +421,35 @@ func (s *Service) Diff(ctx context.Context, repoID, base, head, path string, sta
 	}
 	return string(b), trunc, nil
 }
+func readOnlyGitCommand(command string) bool {
+	switch command {
+	case "annotate", "archive", "blame", "cat-file", "check-attr", "check-ignore", "check-mailmap", "check-ref-format", "count-objects", "describe", "diff", "diff-files", "diff-index", "diff-tree", "for-each-ref", "fsck", "get-tar-commit-id", "grep", "log", "ls-files", "ls-remote", "ls-tree", "merge-base", "name-rev", "range-diff", "rev-list", "rev-parse", "show", "show-branch", "show-index", "show-ref", "shortlog", "status", "symbolic-ref", "verify-commit", "verify-pack", "verify-tag", "whatchanged":
+		return true
+	}
+	return false
+}
+func hasUnsafeGitArg(args []string) bool {
+	for _, arg := range args {
+		if arg == "--ext-diff" || arg == "--no-index" || arg == "-o" || arg == "--output" || strings.HasPrefix(arg, "--output=") {
+			return true
+		}
+	}
+	return false
+}
+func (s *Service) SyncAndWarm(ctx context.Context) error {
+	for _, repo := range s.Repos.List() {
+		if _, err := runner.Run(ctx, repo.Path, "git", "pull", "--ff-only"); err != nil {
+			return fmt.Errorf("pull %s: %w", repo.ID, err)
+		}
+		s.JDT.Refresh(repo.ID)
+		if err := s.JDT.Warm(ctx, repo.ID, repo.Path); err != nil {
+			return fmt.Errorf("warm %s: %w", repo.ID, err)
+		}
+	}
+	return nil
+}
+
+func (s *Service) Shutdown(ctx context.Context) error { return s.JDT.Shutdown(ctx) }
 func (s *Service) ListFiles(repoID, path string, depth int) ([]string, error) {
 	repo, err := s.repo(repoID)
 	if err != nil {

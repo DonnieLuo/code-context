@@ -31,3 +31,15 @@ func TestToolRejectsEmptyBatch(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }
+
+func TestReplacedToolsAreNotExposed(t *testing.T) {
+	server := New(nil, time.Second, 2).Handler()
+	for _, name := range []string{"find_callers", "find_callees", "find_implementations", "get_hover", "get_git_diff"} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/tools/"+name, nil)
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d", name, recorder.Code)
+		}
+	}
+}

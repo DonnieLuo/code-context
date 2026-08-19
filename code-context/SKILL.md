@@ -1,39 +1,40 @@
 ---
 name: code-context
-description: Query managed source repositories through Code Context tools. Use when tracing code paths, locating definitions or implementations, finding references, callers or callees, searching repository text or symbols, reading source files, inspecting file trees, or comparing Git changes.
+description: 通过 Code Context 工具检索受控源码仓库。适用于追踪代码调用路径、定位定义或覆写、查找引用、搜索代码文本或符号、读取文件、查看文件树，以及执行只读 Git 查询。
 ---
 
 # Code Context
 
-Use the Code Context HTTP service for repository-aware code investigation. Before making a request, read [the HTTP API reference](references/http-api.md). Use the host-provided HTTP capability; do not assume a base URL, authentication mechanism, or shell access.
+使用 Code Context HTTP 服务进行面向仓库的代码分析。发起请求前，请阅读 [HTTP API 参考](references/http-api.md)。使用宿主环境提供的 HTTP 能力；不要假定服务地址、认证方式或 Shell 访问权限。
 
-## Workflow
+## 工作流程
 
-1. Use the default `CODE_CONTEXT_BASE_URL` from the HTTP API reference, unless the runtime configuration overrides it. Fetch `GET /v1/tools` once per session to confirm the live tool schema.
-2. Select `repo_id` and narrow with `path` or `globs` whenever known.
-3. Batch independent work in one tool call using `requests`. Each item has its own `repo_id` and arguments. Keep a batch at or below the server limit.
-4. Locate a symbol before semantic navigation: use `search_symbols`, `search_code`, `get_file_symbols`, or `find_definition` to obtain an exact 1-based `file`, `line`, and `column`.
-5. Use semantic tools for relationships. Use text search only when semantic indexing cannot answer the question.
-6. Inspect `results` in request order. Handle an item's `error` independently; if `truncated` is true, narrow the query, path, depth, or batch.
+1. 除非运行时配置覆盖，否则使用 HTTP API 参考中的默认 `CODE_CONTEXT_BASE_URL`。默认依据本 Skill 和 HTTP API 参考调用；仅在服务版本或部署环境未知、接口返回未知工具或参数错误，或需要确认在线 Schema 时，获取 `GET /v1/tools`。
+2. 指定 `repo_id`；已知时使用 `path` 或 `globs` 缩小范围。
+3. 通过 `requests` 在一次工具调用中批量执行相互独立的任务。每项拥有独立的 `repo_id` 和参数；批量大小不得超过服务端限制。
+4. 进行语义导航前先定位符号：使用 `search_symbols`、`search_code`、`get_file_symbols` 或 `find_definition` 获取准确且从 1 开始的 `file`、`line` 和 `column`。
+5. 查询关系时优先使用语义工具；仅在语义索引无法回答时使用文本搜索。
+6. 按请求顺序检查 `results`。独立处理每项的 `error`；如果 `truncated` 为 true，请缩小查询、路径、深度或拆分批次。
 
-## Tool Selection
+## 工具选择
 
-- Use `search_code` for text or regular-expression matches.
-- Use `search_symbols` to locate a type, method, or field by name.
-- Use `find_definition`, `find_implementations`, and `find_references` for symbol navigation.
-- Use `find_callers` and `find_callees` to trace call flow.
-- Use `get_file_symbols`, `get_hover`, and `read_file` to understand a file or symbol in context.
-- Use `list_files` to discover repository layout and `get_git_diff` to inspect changes.
+- `search_code` 用于文本或正则表达式匹配。其内部执行 `rg`（ripgrep），模式语法与 glob 过滤均遵循 ripgrep 语义。
+- `search_symbols` 按名称定位类型、方法或字段。
+- `find_definition`、`find_overrides` 和 `find_references` 用于符号导航。
+- `get_type_hierarchy` 用于查询 Java 继承关系；`get_call_graph` 用于查询入向或出向调用关系。
+- 已知起点和目标符号时，使用 `trace_call_path`。
+- 使用 `get_file_symbols`、`get_symbol_context` 和 `read_file` 在上下文中理解文件或符号。
+- 使用 `list_files` 了解仓库结构；使用 `git_query` 查询只读 Git 历史或工作区状态。
 
-## Call Hierarchy
+## 调用图
 
-Pass `depth: 1` for direct relationships. Use `depth: 2` or `depth: 3` for a business-flow trace. Request deeper traversal only when needed: the result grows quickly and is bounded by the server's configured maximum depth and result limit.
+直接关系传入 `depth: 1`；业务流程追踪可使用 `depth: 2` 或 `depth: 3`。`get_call_graph` 返回 `nodes` 和 `edges`，其中边包含准确的 `call_sites`。仅在必要时请求更深的遍历：结果会快速增长，并受服务端最大深度和结果数限制。
 
-Each hierarchy node includes `depth`; `1` is directly related to the requested method. The server deduplicates cycles. Follow the returned locations rather than attempting to infer a call chain from names alone.
+每个层级节点包含 `depth`；`1` 表示与请求方法直接相关。服务端会对循环去重。应跟随返回的位置，而不要仅凭名称自行推断调用链。
 
-## Batch Shape
+## 批量请求格式
 
-Use the same envelope for every tool:
+所有工具均使用以下请求包裹格式：
 
 ```json
 {
@@ -44,7 +45,7 @@ Use the same envelope for every tool:
 }
 ```
 
-For semantic and call-hierarchy tools, use repository-relative paths and 1-based positions:
+语义、类型层级和调用图工具使用相对于仓库根目录的路径，以及从 1 开始的位置：
 
 ```json
 {
@@ -58,4 +59,4 @@ For semantic and call-hierarchy tools, use repository-relative paths and 1-based
 }
 ```
 
-Do not mix unrelated investigation stages merely to fill a batch. Batch only independent calls whose outputs are not needed to form later inputs.
+不要为了凑满批次而混合无关的分析阶段；仅批量执行其输出不被后续输入依赖的独立调用。

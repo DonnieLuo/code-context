@@ -33,6 +33,17 @@ func (m *Manager) Get(id string) (Repository, error) {
 	return r, nil
 }
 
+// List returns the repositories configured for this service.
+func (m *Manager) List() []Repository {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]Repository, 0, len(m.repos))
+	for _, repo := range m.repos {
+		out = append(out, repo)
+	}
+	return out
+}
+
 // File resolves a user-provided repository-relative path and rejects every escape attempt.
 func (m *Manager) File(repo Repository, relative string) (string, error) {
 	if relative == "" || filepath.IsAbs(relative) {

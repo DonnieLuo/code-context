@@ -21,6 +21,7 @@ type Client struct {
 	pending   map[int64]chan response
 	next      atomic.Int64
 	closeOnce sync.Once
+	done      chan struct{}
 }
 type message struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -52,9 +53,13 @@ func Start(command string, args ...string) (*Client, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	c := &Client{cmd: cmd, in: in, out: bufio.NewReader(out), pending: map[int64]chan response{}}
+	c := &Client{cmd: cmd, in: in, out: bufio.NewReader(out), pending: map[int64]chan response{}, done: make(chan struct{})}
 	go c.readLoop()
-	go func() { _ = cmd.Wait(); c.failAll(fmt.Errorf("language server exited")) }()
+	go func() {
+		_ = cmd.Wait()
+		c.failAll(fmt.Errorf("language server exited"))
+		close(c.done)
+	}()
 	return c, nil
 }
 func (c *Client) Call(ctx context.Context, method string, params any, result any) error {
@@ -86,6 +91,27 @@ func (c *Client) Notify(method string, params any) error {
 	return c.write(message{JSONRPC: "2.0", Method: method, Params: mustJSON(params)})
 }
 func (c *Client) Close() (err error) { c.closeOnce.Do(func() { err = c.in.Close() }); return err }
+
+// Shutdown asks the language server to exit, then forcibly terminates it if it
+// does not exit before ctx expires. This prevents orphaned JDT LS processes.
+func (c *Client) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_ = c.Call(ctx, "shutdown", nil, nil)
+	_ = c.Notify("exit", nil)
+	_ = c.Close()
+	select {
+	case <-c.done:
+		return nil
+	case <-ctx.Done():
+		if c.cmd.Process != nil {
+			_ = c.cmd.Process.Kill()
+		}
+		<-c.done
+		return ctx.Err()
+	}
+}
 func (c *Client) write(v message) error {
 	b, err := json.Marshal(v)
 	if err != nil {

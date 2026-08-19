@@ -46,29 +46,32 @@ Every request item requires `repo_id`.
 | --- | --- | --- |
 | `search_code` | `query` | `path`, `globs`, `limit`, `context_lines` |
 | `find_definition` | `file`, `line`, `column` | — |
-| `find_implementations` | `file`, `line`, `column` | — |
 | `find_references` | `file`, `line`, `column` | — |
-| `find_callers` | `file`, `line`, `column` | `depth` |
-| `find_callees` | `file`, `line`, `column` | `depth` |
+| `find_overrides` | `file`, `line`, `column` | — |
+| `get_type_hierarchy` | `file`, `line`, `column` | `depth`, `direction` (`subtypes` or `supertypes`) |
+| `get_call_graph` | `file`, `line`, `column` | `depth`, `direction` (`outgoing` or `incoming`) |
+| `trace_call_path` | `file`, `line`, `column`, `target_file`, `target_line`, `target_column` | `depth` |
 | `search_symbols` | `query` | — |
 | `get_file_symbols` | `file` | — |
-| `get_hover` | `file`, `line`, `column` | — |
+| `get_symbol_context` | `file`, `line`, `column` | — |
 | `read_file` | `path` | `start_line`, `end_line` |
 | `list_files` | — | `path`, `depth` |
-| `get_git_diff` | — | `base`, `head`, `path`, `staged` |
+| `git_query` | `git_args` | — |
 
 Field meaning:
 
-- `query`: Text or regular expression for `search_code`; symbol name for `search_symbols`.
-- `path`: A repository-relative file or directory scope. For `search_code`, it identifies a file scope; for `list_files`, a directory or file scope; for Git diff, a file scope.
+- `query`: `search_code` 的文本或正则表达式（内部调用 `rg`/ripgrep，语法遵循 ripgrep）；`search_symbols` 的符号名。
+- `path`: A repository-relative file or directory scope. For `search_code`, it identifies a file scope; for `list_files`, a directory or file scope.
 - `globs`: Array of ripgrep glob filters, such as `["*.java"]`.
 - `limit`: Per-request result cap. The server clamps it to its configured maximum.
 - `context_lines`: Surrounding lines returned by `search_code`.
 - `start_line`, `end_line`: Inclusive lines returned by `read_file`; omit to read the complete file within server size limits.
-- `depth`: Call-hierarchy traversal depth for callers/callees; omit for direct relationships. For `list_files`, it limits directory depth instead.
-- `base`, `head`, `staged`: Git diff revisions and staged-diff selector.
+- `depth`: Type/call graph traversal depth; omit for direct relationships. For `list_files`, it limits directory depth instead.
+- `direction`: Graph direction. Type hierarchy accepts `subtypes` or `supertypes`; call graph accepts `outgoing` or `incoming`.
+- `target_*`: Target symbol position for `trace_call_path`.
+- `git_args`: A Git argument vector beginning with a permitted read-only subcommand, for example `["log", "--oneline", "-20"]` or `["diff", "HEAD~1"]`.
 
-For `find_callers` and `find_callees`, each returned location has `depth`, where `1` is directly related to the requested method. The server deduplicates cycles and may truncate at its configured result limit.
+`get_call_graph` returns `nodes` and `edges`; each edge carries the precise source call sites. `trace_call_path` returns an ordered `path` and may be empty when no route is found. Both are bounded by the configured depth and result limit.
 
 ## Repository Management
 

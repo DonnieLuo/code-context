@@ -37,6 +37,12 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	return LoadBytes(b)
+}
+
+// LoadBytes parses configuration embedded in the executable or supplied by a
+// caller without requiring a configuration file at runtime.
+func LoadBytes(b []byte) (Config, error) {
 	var c Config
 	if err := json.Unmarshal(b, &c); err != nil {
 		if c, err = parseYAMLSubset(b); err != nil {

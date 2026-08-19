@@ -2,7 +2,7 @@
 
 面向服务 B Skill 的本地代码检索 HTTP 服务。服务 B 调用本服务的工具获取代码上下文，再将结果用于自己的模型推理。
 
-Java 语义查询由 Eclipse JDT LS 提供，支持精确的定义、实现、引用和调用层级；文本检索和 Git 差异分别使用 `ripgrep` 与 `git`。
+Java 语义查询由 Eclipse JDT LS 提供，支持精确的定义、引用、覆写、类型层级和调用图；文本检索使用 `ripgrep`，Git 查询使用只读的 `git` 子命令。
 
 ## 前置条件
 
@@ -14,7 +14,7 @@ Java 语义查询由 Eclipse JDT LS 提供，支持精确的定义、实现、�
 将 `config.local.yaml` 复制为 `config.yaml`，配置服务器上受控的仓库和 jdtls 启动命令。仓库由部署流程同步；调用方只传 `repo_id`，不会接触服务器路径。
 
 ```bash
-go run ./cmd/code-context -config config.yaml
+go run ./cmd/code-context
 curl http://127.0.0.1:8080/healthz
 ```
 
@@ -35,11 +35,13 @@ curl http://127.0.0.1:8080/healthz
 
 可用工具：
 
-- `search_code`：ripgrep 文本/正则搜索。
-- `find_definition`、`find_implementations`、`find_references`：JDT LS 语义导航。
-- `find_callers`、`find_callees`：JDT LS 调用层级。可传 `depth`（默认 1，受 `server.max_call_depth` 限制）；服务端会遍历调用图、去重并在节点结果中给出 `depth`。
-- `search_symbols`、`get_file_symbols`、`get_hover`：符号和类型信息。
-- `read_file`、`list_files`、`get_git_diff`：文件与 Git 上下文。
+- `search_code`：内部调用 `rg`（ripgrep）执行文本/正则搜索，支持 ripgrep 语法和 glob 过滤。
+- `find_definition`、`find_references`、`find_overrides`：JDT LS 语义导航。
+- `get_type_hierarchy`：返回父类型或子类型；通过 `direction` 指定 `supertypes` 或 `subtypes`。
+- `get_call_graph`：返回保留节点、边和实际调用点的调用图；通过 `direction` 指定 `outgoing` 或 `incoming`。
+- `trace_call_path`：从起点到目标符号寻找调用路径。
+- `search_symbols`、`get_file_symbols`、`get_symbol_context`：符号定位、文件符号和符号上下文。
+- `read_file`、`list_files`、`git_query`：文件与 Git 上下文。`git_query` 的 `git_args` 必须以允许的只读 Git 子命令开始。
 
 `GET /v1/tools` 返回批量请求的 JSON Schema，适合嵌入服务 B 的 Skill 定义。代码仓库更新后调用：
 
@@ -47,7 +49,7 @@ curl http://127.0.0.1:8080/healthz
 curl -X POST http://127.0.0.1:8080/v1/repositories/order-service/refresh
 ```
 
-这会关闭该仓库的 JDT LS 会话；下一次语义查询会启动新会话并重新导入项目。
+这会关闭该仓库的 JDT LS 会话；下一次语义查询会启动新会话并重新导入项目。服务启动时会先对全部受控仓库执行 `git pull --ff-only` 并初始化 JDT LS，完成后才开始监听。
 
 可通过 `GET /v1/repositories/order-service/status` 查看当前 Git revision 和 JDT LS 会话是否已启动。
 
@@ -59,11 +61,11 @@ curl -X POST http://127.0.0.1:8080/v1/repositories/order-service/refresh
 ./scripts/package-ubuntu.sh
 ```
 
-将 `dist/code-context-linux-amd64.tar.gz` 解压到 Ubuntu 主机。包内默认使用 `config.yaml` 启动；也可通过 `-config` 指定其他配置文件：
+将生成的 `dist/code-context-amd64` 复制到 Ubuntu 主机。打包时会将当前 `config.yaml` 嵌入可执行文件；更新配置后需重新打包。也可通过 `-config` 指定外部配置文件覆盖内置配置：
 
 ```bash
-./code-context
-./code-context -config /etc/code-context/config.yaml
+./code-context-amd64
+./code-context-amd64 -config /etc/code-context/config.yaml
 ```
 
 ## 安全边界

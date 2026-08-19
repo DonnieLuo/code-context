@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/example/code-context/internal/lsp"
 	"github.com/example/code-context/internal/tools"
 )
 
@@ -44,6 +43,11 @@ type ToolRequest struct {
 	Head         string   `json:"head"`
 	Staged       bool     `json:"staged"`
 	Depth        int      `json:"depth"`
+	Direction    string   `json:"direction"`
+	TargetFile   string   `json:"target_file"`
+	TargetLine   int      `json:"target_line"`
+	TargetColumn int      `json:"target_column"`
+	GitArgs      []string `json:"git_args"`
 }
 
 type toolBatch struct {
@@ -114,7 +118,7 @@ func (s *Server) tool(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) execute(ctx context.Context, name string, req ToolRequest) (any, bool, error) {
-	semanticTool := strings.HasPrefix(name, "find_") || name == "get_hover"
+	semanticTool := strings.HasPrefix(name, "find_") || name == "get_symbol_context" || name == "get_call_graph" || name == "trace_call_path" || name == "get_type_hierarchy"
 	if semanticTool && (req.File == "" || req.Line < 1 || req.Column < 1) {
 		return nil, false, fmt.Errorf("file, line, and column (1-based) are required")
 	}
@@ -135,34 +139,36 @@ func (s *Server) execute(ctx context.Context, name string, req ToolRequest) (any
 		data, truncated, err = s.svc.Search(ctx, req.RepoID, req.Query, req.Path, req.Globs, req.Limit, req.ContextLines)
 	case "find_definition":
 		data, err = s.svc.Semantic(ctx, req.RepoID, req.File, req.Line, req.Column, "textDocument/definition")
-	case "find_implementations":
-		data, err = s.svc.Semantic(ctx, req.RepoID, req.File, req.Line, req.Column, "textDocument/implementation")
 	case "find_references":
 		data, err = s.svc.Semantic(ctx, req.RepoID, req.File, req.Line, req.Column, "textDocument/references")
-	case "find_callers":
-		data, truncated, err = s.svc.CallHierarchy(ctx, req.RepoID, req.File, req.Line, req.Column, req.Depth, true)
-	case "find_callees":
-		data, truncated, err = s.svc.CallHierarchy(ctx, req.RepoID, req.File, req.Line, req.Column, req.Depth, false)
+	case "find_overrides":
+		data, err = s.svc.Semantic(ctx, req.RepoID, req.File, req.Line, req.Column, "textDocument/implementation")
+	case "get_type_hierarchy":
+		data, truncated, err = s.svc.TypeHierarchy(ctx, req.RepoID, req.File, req.Line, req.Column, req.Depth, req.Direction)
+	case "get_call_graph":
+		data, truncated, err = s.svc.CallGraph(ctx, req.RepoID, req.File, req.Line, req.Column, req.Depth, req.Direction)
+	case "trace_call_path":
+		data, truncated, err = s.svc.TraceCallPath(ctx, req.RepoID, req.File, req.Line, req.Column, req.TargetFile, req.TargetLine, req.TargetColumn, req.Depth)
 	case "search_symbols":
 		data, err = s.svc.Symbols(ctx, req.RepoID, req.Query)
 	case "get_file_symbols":
 		data, err = s.fileSymbols(ctx, req.RepoID, req.File)
-	case "get_hover":
-		data, err = s.hover(ctx, req.RepoID, req.File, req.Line, req.Column)
+	case "get_symbol_context":
+		data, err = s.svc.SymbolContext(ctx, req.RepoID, req.File, req.Line, req.Column)
 	case "read_file":
 		data, err = s.svc.Read(req.RepoID, req.Path, req.StartLine, req.EndLine)
 	case "list_files":
 		data, err = s.svc.ListFiles(req.RepoID, req.Path, req.Depth)
-	case "get_git_diff":
+	case "git_query":
 		var d string
-		d, truncated, err = s.svc.Diff(ctx, req.RepoID, req.Base, req.Head, req.Path, req.Staged)
-		data = map[string]any{"diff": d}
+		d, truncated, err = s.svc.GitQuery(ctx, req.RepoID, req.GitArgs)
+		data = map[string]any{"output": d}
 	}
 	return data, truncated, err
 }
 
 func knownTool(name string) bool {
-	for _, candidate := range []string{"search_code", "find_definition", "find_implementations", "find_references", "find_callers", "find_callees", "read_file", "list_files", "get_git_diff", "search_symbols", "get_file_symbols", "get_hover"} {
+	for _, candidate := range []string{"search_code", "find_definition", "find_references", "find_overrides", "get_type_hierarchy", "get_call_graph", "trace_call_path", "read_file", "list_files", "git_query", "search_symbols", "get_file_symbols", "get_symbol_context"} {
 		if name == candidate {
 			return true
 		}
@@ -186,17 +192,6 @@ func (s *Server) fileSymbols(ctx context.Context, repoID, file string) (any, err
 		return nil, err
 	}
 	return s.svc.JDT.FileSymbols(ctx, repoID, repo.Path, full)
-}
-func (s *Server) hover(ctx context.Context, repoID, file string, line, col int) (any, error) {
-	repo, err := s.svc.Repos.Get(repoID)
-	if err != nil {
-		return nil, err
-	}
-	full, err := s.svc.Repos.File(repo, file)
-	if err != nil {
-		return nil, err
-	}
-	return s.svc.JDT.Hover(ctx, repoID, repo.Path, full, lsp.Position{Line: line - 1, Character: col - 1})
 }
 func (s *Server) repository(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/repositories/"), "/")
@@ -251,7 +246,7 @@ func write(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 func (s *Server) schemas(w http.ResponseWriter, r *http.Request) {
-	names := []string{"search_code", "find_definition", "find_implementations", "find_references", "find_callers", "find_callees", "read_file", "list_files", "get_git_diff", "search_symbols", "get_file_symbols", "get_hover"}
+	names := []string{"search_code", "find_definition", "find_references", "find_overrides", "get_type_hierarchy", "get_call_graph", "trace_call_path", "read_file", "list_files", "git_query", "search_symbols", "get_file_symbols", "get_symbol_context"}
 	tools := make([]map[string]any, 0, len(names))
 	for _, n := range names {
 		tools = append(tools, map[string]any{"name": n, "description": description(n), "input_schema": toolInputSchema(n)})
@@ -279,9 +274,14 @@ func toolInputSchema(name string) map[string]any {
 		"head":          map[string]string{"type": "string"},
 		"staged":        map[string]string{"type": "boolean"},
 		"depth":         map[string]any{"type": "integer", "minimum": 1},
+		"direction":     map[string]any{"type": "string", "enum": []string{"outgoing", "incoming", "subtypes", "supertypes"}},
+		"target_file":   map[string]string{"type": "string"},
+		"target_line":   map[string]any{"type": "integer", "minimum": 1},
+		"target_column": map[string]any{"type": "integer", "minimum": 1},
+		"git_args":      map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
 	}
 	required := []string{"repo_id"}
-	if strings.HasPrefix(name, "find_") || name == "get_hover" {
+	if strings.HasPrefix(name, "find_") || name == "get_symbol_context" || name == "get_call_graph" || name == "trace_call_path" || name == "get_type_hierarchy" {
 		required = append(required, "file", "line", "column")
 	}
 	if name == "search_code" || name == "search_symbols" {
@@ -292,6 +292,9 @@ func toolInputSchema(name string) map[string]any {
 	}
 	if name == "get_file_symbols" {
 		required = append(required, "file")
+	}
+	if name == "git_query" {
+		required = append(required, "git_args")
 	}
 	return map[string]any{
 		"type": "object",
