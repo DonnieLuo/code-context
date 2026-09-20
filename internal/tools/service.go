@@ -32,6 +32,9 @@ type Location struct {
 	Precision   string `json:"precision"`
 	Source      string `json:"source"`
 	Depth       int    `json:"depth,omitempty"`
+	SymbolKind  int    `json:"-"`
+	SymbolType  string `json:"-"`
+	Container   string `json:"-"`
 }
 type GraphNode struct {
 	ID     string `json:"id"`
@@ -87,9 +90,20 @@ func (s *Service) Symbols(ctx context.Context, repoID, q string) ([]Location, er
 	for _, x := range xs {
 		l := s.loc(repo, x.Location)
 		l.Snippet = x.Name
+		l.SymbolKind = x.Kind
+		l.SymbolType = symbolKindName(x.Kind)
+		l.Container = x.ContainerName
 		out = append(out, l)
 	}
 	return out, nil
+}
+
+func symbolKindName(kind int) string {
+	names := [...]string{"", "file", "module", "namespace", "package", "class", "method", "property", "field", "constructor", "enum", "interface", "function", "variable", "constant", "string", "number", "boolean", "array", "object", "key", "null", "enum_member", "struct", "event", "operator", "type_parameter"}
+	if kind > 0 && kind < len(names) {
+		return names[kind]
+	}
+	return "unknown"
 }
 func (s *Service) TypeHierarchy(ctx context.Context, repoID, file string, line, column, depth int, direction string) ([]Location, bool, error) {
 	repo, err := s.repo(repoID)
