@@ -26,6 +26,18 @@ type Config struct {
 		Args          []string `json:"args"`
 		WorkspaceRoot string   `json:"workspace_root"`
 	} `json:"jdtls"`
+	CodeGraph struct {
+		Enabled              bool          `json:"enabled"`
+		Command              string        `json:"command"`
+		Args                 []string      `json:"args"`
+		DataRoot             string        `json:"data_root"`
+		StartupTimeout       time.Duration `json:"startup_timeout"`
+		CallTimeout          time.Duration `json:"call_timeout"`
+		MaxConcurrentPerRepo int           `json:"max_concurrent_per_repo"`
+		MaxProcesses         int           `json:"max_processes"`
+		ReindexOnStart       bool          `json:"reindex_on_start"`
+		Telemetry            bool          `json:"telemetry"`
+	} `json:"codegraph"`
 	Repositories map[string]Repository `json:"repositories"`
 }
 type Repository struct {
@@ -73,6 +85,24 @@ func LoadBytes(b []byte) (Config, error) {
 	if c.JDTLS.WorkspaceRoot == "" {
 		c.JDTLS.WorkspaceRoot = ".code-context/jdtls"
 	}
+	if c.CodeGraph.Command == "" {
+		c.CodeGraph.Command = "codegraph-mcp"
+	}
+	if c.CodeGraph.DataRoot == "" {
+		c.CodeGraph.DataRoot = ".code-context/codegraph"
+	}
+	if c.CodeGraph.StartupTimeout <= 0 {
+		c.CodeGraph.StartupTimeout = 2 * time.Minute
+	}
+	if c.CodeGraph.CallTimeout <= 0 {
+		c.CodeGraph.CallTimeout = 30 * time.Second
+	}
+	if c.CodeGraph.MaxConcurrentPerRepo <= 0 {
+		c.CodeGraph.MaxConcurrentPerRepo = 4
+	}
+	if c.CodeGraph.MaxProcesses <= 0 {
+		c.CodeGraph.MaxProcesses = len(c.Repositories)
+	}
 	if len(c.Repositories) == 0 {
 		return Config{}, fmt.Errorf("repositories must not be empty")
 	}
@@ -90,6 +120,18 @@ func LoadBytes(b []byte) (Config, error) {
 		}
 		repo.Path = real
 		c.Repositories[id] = repo
+	}
+	if c.CodeGraph.Enabled {
+		dataRoot, err := filepath.Abs(c.CodeGraph.DataRoot)
+		if err != nil {
+			return Config{}, err
+		}
+		for id, repo := range c.Repositories {
+			rel, err := filepath.Rel(repo.Path, dataRoot)
+			if err == nil && (rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..")) {
+				return Config{}, fmt.Errorf("codegraph data_root must be outside repository %q", id)
+			}
+		}
 	}
 	return c, nil
 }
@@ -174,6 +216,56 @@ func parseYAMLSubset(b []byte) (Config, error) {
 				c.JDTLS.Command = value
 			} else if key == "workspace_root" {
 				c.JDTLS.WorkspaceRoot = value
+			} else if key == "args" {
+				if e := json.Unmarshal([]byte(strings.TrimSpace(parts[1])), &c.JDTLS.Args); e != nil {
+					return Config{}, fmt.Errorf("line %d: args must be a JSON string array: %w", lineNo, e)
+				}
+			}
+		case "codegraph":
+			switch key {
+			case "enabled", "reindex_on_start", "telemetry":
+				b, e := strconv.ParseBool(value)
+				if e != nil {
+					return Config{}, e
+				}
+				switch key {
+				case "enabled":
+					c.CodeGraph.Enabled = b
+				case "reindex_on_start":
+					c.CodeGraph.ReindexOnStart = b
+				case "telemetry":
+					c.CodeGraph.Telemetry = b
+				}
+			case "command":
+				c.CodeGraph.Command = value
+			case "args":
+				if e := json.Unmarshal([]byte(strings.TrimSpace(parts[1])), &c.CodeGraph.Args); e != nil {
+					return Config{}, fmt.Errorf("line %d: args must be a JSON string array: %w", lineNo, e)
+				}
+			case "data_root":
+				c.CodeGraph.DataRoot = value
+			case "startup_timeout", "call_timeout":
+				d, e := time.ParseDuration(value)
+				if e != nil {
+					return Config{}, e
+				}
+				if key == "startup_timeout" {
+					c.CodeGraph.StartupTimeout = d
+				} else {
+					c.CodeGraph.CallTimeout = d
+				}
+			case "max_concurrent_per_repo", "max_processes":
+				n, e := strconv.Atoi(value)
+				if e != nil {
+					return Config{}, e
+				}
+				if key == "max_concurrent_per_repo" {
+					c.CodeGraph.MaxConcurrentPerRepo = n
+				} else {
+					c.CodeGraph.MaxProcesses = n
+				}
+			default:
+				return Config{}, fmt.Errorf("line %d: unsupported codegraph setting", lineNo)
 			}
 		case "repositories":
 			if currentRepo == "" || key != "path" {

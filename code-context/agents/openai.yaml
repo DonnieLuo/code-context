@@ -1,4 +1,4 @@
 interface:
   display_name: "Code Context"
-  short_description: "Query managed repositories for precise code context."
-  default_prompt: "Use $code-context via its v1 HTTP API to plan and batch parallel code searches, filter the relevant evidence, and answer from the selected code."
+  short_description: "Get code context from managed repositories."
+  default_prompt: "Use $code-context via its v2 HTTP API. Start with build_context, then use impact or precise Java tools only when needed."

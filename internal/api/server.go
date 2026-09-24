@@ -11,14 +11,19 @@ import (
 	"time"
 
 	"github.com/example/code-context/internal/tools"
+	"github.com/example/code-context/internal/v2"
 )
 
 type Server struct {
 	svc      *tools.Service
+	v2       *v2.Service
 	timeout  time.Duration
 	maxBody  int64
 	maxBatch int
 }
+
+// WithV2 adds the independent v2 surface without changing the v1 handlers.
+func (s *Server) WithV2(service *v2.Service) *Server { s.v2 = service; return s }
 
 func New(svc *tools.Service, timeout time.Duration, maxBatch int) *Server {
 	if maxBatch <= 0 {
@@ -72,6 +77,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/tools", s.schemas)
 	mux.HandleFunc("POST /v1/tools/", s.tool)
 	mux.HandleFunc("/v1/repositories/", s.repository)
+	if s.v2 != nil {
+		s.registerV2(mux)
+	}
 	return s.middleware(mux)
 }
 

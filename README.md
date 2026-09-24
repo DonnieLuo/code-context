@@ -71,3 +71,34 @@ curl -X POST http://127.0.0.1:8080/v1/repositories/order-service/refresh
 ## 安全边界
 
 仓库只来自配置文件。服务拒绝绝对路径、`..` 路径穿越和符号链接逃逸；外部命令均以固定参数执行，不使用 shell。默认仅监听 `127.0.0.1`。
+
+## v2：CodeGraph 上下文接口
+
+v2 在现有 v1 路由之外提供 `POST /v2/tools/{name}`，仍使用 `{"requests":[...]}` 批量格式。默认工具是 `build_context`：自然语言问题由 CodeGraph 的 `get_curated_context` 提供跨代码库上下文；已知符号位置使用 `get_ai_context`，修改意图使用 `get_edit_context`。`impact` 和 `change_context` 分别映射 CodeGraph 的影响分析与 PR 上下文。Java 精确定义、引用、实现和类型层级仍由 JDT LS 提供。完整请求与错误码见 [v2 API 参考](code-context/references/http-api-v2.md)，实现边界见 [设计文档](docs/codegraph-v2-design.md)。
+
+CodeGraph 固定为 `@astudioplus/codegraph-mcp@0.20.1`。本地/Ubuntu 可安装：
+
+```bash
+npm install -g @astudioplus/codegraph-mcp@0.20.1
+```
+
+安装器会下载对应平台的官方引擎并校验发布的 SHA-256；安装后确认 `codegraph-mcp` 可执行。Dockerfile 在独立 Node 构建阶段安装同一版本，并在镜像构建时检查引擎是否存在。Ubuntu 打包脚本也可通过 `CODEGRAPH_ENGINE_BIN` 与官方 `CODEGRAPH_ENGINE_SHA256` 将已校验的 Linux 引擎和 `codegraph-mcp` 启动包装器放入 `dist/`；运行时把 `dist/` 放进 `PATH`。`config.yaml` 的 `codegraph.command` 应指向实际安装的 `codegraph-mcp` 或该包装器。CodeGraph 文档：[安装与选项](https://github.com/codegraph-ai/CodeGraph/blob/main/mcp-package/README.md)、[工具调用格式](https://github.com/codegraph-ai/CodeGraph/blob/main/docs/tool-calling-guide.md)。
+
+配置中的 `codegraph.data_root` 必须位于受控仓库之外，且服务进程可写。每个 `repo_id` 使用独立的常驻 MCP stdio 进程和数据目录。`reindex_on_start: true` 会在原有 Git 同步和 JDT 预热之后异步重建索引；索引完成前 v1 继续可用，v2 高阶工具返回索引状态。受控仓库更新后，管理员调用：
+
+```bash
+curl -X POST http://127.0.0.1:8080/v2/repositories/order-service/refresh-index
+curl http://127.0.0.1:8080/v2/repositories/order-service/status
+```
+
+`index_revision` 是 Go 服务在成功重建索引且工作树干净、HEAD 未变化时记录的 commit。服务重启后会重新验证索引，旧元数据不会直接使状态变为 `ready`。若需要回滚服务 B 的 v2 调用，可改回 [v1 参考](code-context/references/http-api.md)；配置 `codegraph.enabled: false` 可关闭 CodeGraph 进程，v1 路由继续工作。
+
+示例配置使用 `granite-97m`，因为 CodeGraph 将其列为多语言模型，适合中文问题；首次启动每个仓库隔离的数据目录时需要准备该模型。离线部署应在发布包中预热模型及索引，或在可联网环境完成首次索引后复制受控数据目录。不要使用 `--graph-only` 作为自然语言检索的默认模式。
+
+固定版本 MCP 契约验证（需要本机已有并通过发布校验和核对的引擎）：
+
+```bash
+CODEGRAPH_ENGINE_BIN=/path/to/codegraph-server go test ./internal/codegraph -run TestRealCodeGraphContract -v
+```
+
+普通 `go test ./...` 使用内置的协议模拟服务验证 Go 适配器和路由；上线前仍需运行上述真实引擎契约测试及目标 Java 多模块仓库的端到端验收。

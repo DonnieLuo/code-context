@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"github.com/example/code-context/internal/api"
+	"github.com/example/code-context/internal/codegraph"
 	"github.com/example/code-context/internal/config"
 	"github.com/example/code-context/internal/lsp"
 	"github.com/example/code-context/internal/repository"
 	"github.com/example/code-context/internal/tools"
+	"github.com/example/code-context/internal/v2"
 )
 
 // embeddedConfig is set by the packaging script. It contains the Base64 form
@@ -48,7 +50,14 @@ func main() {
 		slog.Error("repository synchronization or language-server warmup failed", "error", err)
 		os.Exit(1)
 	}
-	srv := &http.Server{Addr: cfg.Server.Listen, Handler: api.New(service, cfg.Server.RequestTimeout, cfg.Server.MaxBatchRequests).Handler(), ReadHeaderTimeout: cfg.Server.RequestTimeout}
+	graph, err := codegraph.NewManager(cfg, service.Repos)
+	if err != nil {
+		slog.Error("CodeGraph manager initialization failed", "error", err)
+		os.Exit(1)
+	}
+	graph.RefreshOnStart()
+	v2Service := &v2.Service{Legacy: service, Graph: graph, MaxResults: cfg.Server.MaxResults, MaxTokenBudget: 12000}
+	srv := &http.Server{Addr: cfg.Server.Listen, Handler: api.New(service, cfg.Server.RequestTimeout, cfg.Server.MaxBatchRequests).WithV2(v2Service).Handler(), ReadHeaderTimeout: cfg.Server.RequestTimeout}
 	slog.Info("code-context service started", "listen", cfg.Server.Listen, "repositories", len(cfg.Repositories))
 	serverDone := make(chan error, 1)
 	go func() { serverDone <- srv.ListenAndServe() }()
@@ -68,6 +77,7 @@ func main() {
 			slog.Error("HTTP server shutdown failed", "error", err)
 		}
 		cancelHTTP()
+		graph.Close()
 		jdtShutdownCtx, cancelJDT := context.WithTimeout(context.Background(), 10*time.Second)
 		if err := service.Shutdown(jdtShutdownCtx); err != nil {
 			slog.Error("JDT LS shutdown failed", "error", err)

@@ -6,7 +6,7 @@
 
 现有 Go HTTP 服务向服务 B 提供 v1 批量工具。v2 的首选入口是一次调用取得可用于 AI 推理或修改的代码上下文；代码搜索、调用关系、影响分析和上下文选择尽量交给 CodeGraph 的持久化图谱。JDT LS 仅在 Java 类型绑定和精确位置导航上补充结果。所有 v1 URL、Schema、请求/响应、行为、默认值、错误与仓库端点保持原样；v2 作为平行接口加入。
 
-已核对的 CodeGraph 官方能力：MCP stdio 启动、`--workspace`、`--profile`、`codegraph_get_curated_context`、`codegraph_get_ai_context`、`codegraph_get_edit_context`、`codegraph_analyze_impact`、`codegraph_get_call_graph`、`codegraph_symbol_search`、`codegraph_pr_context`、`codegraph_reindex_workspace`、`codegraph_index_files`、`codegraph_index_directory`。工具完整列表见 [MCP 包文档](https://github.com/codegraph-ai/CodeGraph/blob/main/mcp-package/README.md)，工具用途见 [项目 README](https://github.com/codegraph-ai/CodeGraph/blob/main/README.md)。官方示例说明 `get_ai_context` 使用 `uri`、零基 `line`、`intent`，`pr_context` 使用 `baseBranch`。其余精确输入 Schema、响应结构必须在锁定版本启动后从 MCP `tools/list` 读取并做契约测试，本文不假定未公开字段。CodeGraph 版本和二进制校验和由部署固定，不使用浮动 `latest`。
+已核对的 CodeGraph 官方能力：MCP stdio 启动、`--workspace`、`--profile`、`codegraph_get_curated_context`、`codegraph_get_ai_context`、`codegraph_get_edit_context`、`codegraph_analyze_impact`、`codegraph_get_call_graph`、`codegraph_symbol_search`、`codegraph_pr_context`、`codegraph_reindex_workspace`、`codegraph_index_files`、`codegraph_index_directory`。工具完整列表见 [MCP 包文档](https://github.com/codegraph-ai/CodeGraph/blob/main/mcp-package/README.md)，工具用途见 [项目 README](https://github.com/codegraph-ai/CodeGraph/blob/main/README.md)。官方示例说明 `get_ai_context` 使用 `uri`、`line`、`intent`，`pr_context` 使用 `baseBranch`。调用指南将 `line` 记为零基；CodeGraph 0.20.1 实测以一基行号才能精确命中，否则可能回退到最近符号，因此适配器按固定版本实测行为传一基并由真实引擎测试守护。其余精确输入 Schema、响应结构必须在锁定版本启动后从 MCP `tools/list` 读取并做契约测试，本文不假定未公开字段。CodeGraph 版本和二进制校验和由部署固定，不使用浮动 `latest`。
 
 **第一阶段不做**：修改或重写 v1；自研知识图谱、调用图、图遍历、复杂 Context Builder/排序器；向 CodeGraph 图谱写入 JDT LS 结果；要求两个索引互写；让 AI 直接控制 CodeGraph 索引或执行任意 MCP 工具。v2 对 CodeGraph 响应只做路径校验、格式归一、预算截断和少量固定路由。
 
@@ -51,7 +51,7 @@ v2 对 AI 展示高阶工具优先；精确/底层工具在 Schema 中仍可发�
 
 统一使用 `GET /v2/tools`（返回 v2 工具 Schema）、`POST /v2/tools/{name}`，请求体 `{"requests":[...]}`，批次上限沿用配置值；`results[i]` 顺序对应 `requests[i]`。为避免单项变慢拖累整批，服务 B 的默认调用每批一项；并发由服务端限流。v2 单项成功格式为 `{"data":...,"truncated":false,"warnings":[],"meta":{...}}`，失败为 `{"error":{"code":"...","message":"...","retryable":false},"truncated":false,"warnings":[],"meta":{...}}`。JSON 解析/批次错误用 HTTP 4xx；单项工具错误留在 `results[i]`。对空结果须区别 `no_match`、`index_unavailable`、`index_stale`。v2 的 `limit`、`token_budget` 设置上限，超限报 `invalid_request`，不悄悄扩大成本。
 
-通用 `meta`：`repo_id`、`source`（`codegraph|jdtls|rg|git|composite`）、`repo_revision`（查询前 `git rev-parse HEAD`）、`index_revision`（服务端记录的最后一次**成功完成** CodeGraph 索引对应 commit；没有则 `null`）、`index_state`（`ready|stale|building|unavailable|unknown`）、`indexed_at`（有记录时）、`duration_ms`。`index_revision` 是 Go 层写入的管理元数据，**不宣称 CodeGraph 原生提供 Git revision**；仅在索引操作前后 HEAD 一致且索引成功时推进。工作区非干净时另给 `working_tree_dirty=true` 和 `working_tree_unindexed` 警告。响应可记录 `codegraph_version` 与 `tool_schema_fingerprint` 用于诊断。
+通用 `meta`：`repo_id`、`source`（`codegraph|jdtls|rg|git|go|composite`）、`repo_revision`（查询前 `git rev-parse HEAD`）、`index_revision`（服务端记录的最后一次**成功完成** CodeGraph 索引对应 commit；没有则 `null`）、`index_state`（`ready|stale|building|unavailable|unknown`）、`indexed_at`（有记录时）、`duration_ms`。`index_revision` 是 Go 层写入的管理元数据，**不宣称 CodeGraph 原生提供 Git revision**；仅在索引操作前后 HEAD 一致且索引成功时推进。工作区非干净时另给 `working_tree_dirty=true` 和 `working_tree_unindexed` 警告。响应可记录 `codegraph_version` 与 `tool_schema_fingerprint` 用于诊断。
 
 ### 4.1 AI 默认高阶工具
 
@@ -178,7 +178,7 @@ flowchart TD
 3. **MCP 协议**：`internal/codegraph/client.go` 实现 JSON-RPC stdio 帧、initialize/initialized、`tools/list`、`tools/call`、请求 ID 关联与取消；或引入维护中的 Go MCP SDK，优先复用 SDK。`stdout` 只解析协议，`stderr` 写有上限的日志。启动后验证所需工具名与输入 Schema，记录 fingerprint；若缺少 `get_curated_context`、`get_ai_context`、`get_edit_context`、`analyze_impact`、`get_call_graph`、`symbol_search`、`pr_context`、`reindex_workspace`，对应 v2 功能标记 unavailable，不做未知工具调用。按运行时 Schema 映射参数，并用固定版本契约测试锁住映射。不得把 HTTP 任意字段直接透传 MCP。
 4. **生命周期/并发**：manager 对每仓库 singleflight 启动和索引；连接复用，单次工具调用有子超时，HTTP context 取消须取消 MCP 请求或在超时后丢弃响应；每仓库有有界 semaphore，队列满返回 `busy`。进程退出时标记不可用、清理未完成请求，指数退避重启（限制频率）；成功重新握手后才服务。关停先停止接收请求，等待在途请求，随后关闭/终止每个 CodeGraph 子进程，再沿用现有 JDT 关停。
 5. **索引与 revision**：`POST /v2/repositories/{id}/refresh-index` 为受控管理端点，调用 `codegraph_reindex_workspace` 并串行化；小范围文件变更可内部调用 `codegraph_index_files`，但只有可证明变更范围时使用。开始前读取 HEAD/dirty，结束后再读 HEAD/dirty；仅两次 HEAD 一致、无未索引改动且工具成功时设置 `index_revision=HEAD`、`index_state=ready`。Git 同步完成后应触发重建/增量索引；现有 v1 `/refresh` 仍只刷新 JDT，不承担 CodeGraph 同步。启动可先服务 v1；v2 在索引完成前返回 `building`，避免 CodeGraph 慢启动拖住原有服务。多模块 Java 项目以同一个仓库根索引 CodeGraph，JDT 保持现有每仓库 workspace。
-6. **安全与观测**：只允许配置中的仓库；对 HTTP 位置先用 `Repos.File`，转换为 `file://` URI 时正确转义，HTTP 1 基转换为 CodeGraph 0 基（按工具 Schema 确认）与 JDT 0 基。CodeGraph 返回的 file URI 必须落在相应仓库下，拒绝 `..`、符号链接逃逸、其他仓库路径。CodeGraph 属于本地可执行程序，运行身份最小权限，索引目录不可由 HTTP 指定；限制响应大小、token 数、stderr 长度。日志记录 tool、repo_id、耗时、状态、revision/索引滞后，不记录代码正文、自然语言问题或文件绝对路径。指标：调用成功率/时延、重启次数、索引耗时、索引落后、降级次数、预算截断。
+6. **安全与观测**：只允许配置中的仓库；对 HTTP 位置先用 `Repos.File`，转换为 `file://` URI 时正确转义，HTTP 1 基直接传给已验证的 CodeGraph 0.20.1，传给 JDT 时转换为 0 基。CodeGraph 返回的 file URI 必须落在相应仓库下，拒绝 `..`、符号链接逃逸、其他仓库路径。CodeGraph 属于本地可执行程序，运行身份最小权限，索引目录不可由 HTTP 指定；限制响应大小、token 数、stderr 长度。日志记录 tool、repo_id、耗时、状态、revision/索引滞后，不记录代码正文、自然语言问题或文件绝对路径。指标：调用成功率/时延、重启次数、索引耗时、索引落后、降级次数、预算截断。
 
 ## 8. 失败与降级规则
 
@@ -209,7 +209,7 @@ flowchart TD
 | --- | --- | --- |
 | v1 回归 | 13 工具 Schema/端点/成功及失败样例、`/v1/repositories` | 与基线一致；尤其批量结果顺序、错误、`trace_call_path`、刷新行为不变 |
 | 自然语言问题 | `build_context(intent=explain,question="退款如何触发")` | 走 `get_curated_context`；一次 HTTP 请求，返回来源、可定位片段、revision，不要求客户端多轮搜索 |
-| 已知 symbol explain | Java file/line/column、`intent=explain` | 走 `get_ai_context`；1 基/0 基换算正确，返回聚焦符号与相关上下文 |
+| 已知 symbol explain | Java file/line/column、`intent=explain` | 走 `get_ai_context`；按 CodeGraph 0.20.1 实测一基行号精确命中，返回聚焦符号与相关上下文 |
 | 修改上下文 | 已知位置、`intent=modify` | 走 `get_edit_context`；含工具实际返回的调用方/测试等内容，不自编造 |
 | 影响分析 | 已知符号、modify/delete/rename | 走 `analyze_impact`；不支持的操作明确报错；来源与精度可见 |
 | Java interface/override | 接口方法和实现位置、`precision=java_exact` | JDT `definition/references/implementation/typeHierarchy` 被正确调用；与 CodeGraph 结果并列 |

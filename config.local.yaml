@@ -10,6 +10,17 @@ jdtls:
   # Point this at the jdtls launcher installed on the server.
   command: "/Users/donnie/Downloads/jdtls/bin/jdtls"
   workspace_root: "/Users/donnie/Workspace"
+codegraph:
+  enabled: true
+  command: "codegraph-mcp"
+  args: ["--embedding-model", "granite-97m"]
+  data_root: "/Users/donnie/Workspace/codegraph-data"
+  startup_timeout: 2m
+  call_timeout: 30s
+  max_concurrent_per_repo: 4
+  max_processes: 2
+  reindex_on_start: true
+  telemetry: false
 repositories:
   easy-rent-contract:
     path: "/Users/donnie/IdeaProjects/easy-rent-contract"
